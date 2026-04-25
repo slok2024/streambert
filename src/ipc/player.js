@@ -403,6 +403,49 @@ function register(getMainWindow, { writeSecretMigration }) {
       return null;
     }
   });
+
+  // ── Native Picture-in-Picture via requestPictureInPicture() ───────────────
+  // Iterates all frames of the player webview (same approach as query-video-progress).
+  ipcMain.handle("request-pip", async (_, webContentsId) => {
+    try {
+      const { webContents } = require("electron");
+      const wc = webContents.fromId(webContentsId);
+      if (!wc || wc.isDestroyed())
+        return { ok: false, reason: "no-webcontents" };
+
+      const allFrames = [];
+      const collect = (frame) => {
+        allFrames.push(frame);
+        for (const child of frame.frames || []) collect(child);
+      };
+      collect(wc.mainFrame);
+
+      const JS = `
+        (() => {
+          const v = document.querySelector('video');
+          if (!v) return 'no-video';
+          if (document.pictureInPictureElement === v) {
+            document.exitPictureInPicture().catch(() => {});
+            return 'exited';
+          }
+          if (!document.pictureInPictureEnabled) return 'not-supported';
+          return v.requestPictureInPicture()
+            .then(() => 'ok')
+            .catch((e) => 'error:' + e.message);
+        })()
+      `;
+
+      for (const frame of allFrames) {
+        try {
+          const result = await frame.executeJavaScript(JS, true);
+          if (result && result !== "no-video") return { ok: true, result };
+        } catch {}
+      }
+      return { ok: false, reason: "no-video-found" };
+    } catch (e) {
+      return { ok: false, reason: e.message };
+    }
+  });
 }
 
 module.exports = { register };

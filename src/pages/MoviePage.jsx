@@ -36,6 +36,7 @@ import {
   RatingLockIcon,
   SourceIcon,
   ShieldBlockIcon,
+  PopOutIcon,
 } from "../components/Icons";
 import DownloadModal from "../components/DownloadModal";
 import TrailerModal from "../components/TrailerModal";
@@ -104,6 +105,9 @@ export default function MoviePage({
   // Webview loading overlay
   const [webviewLoading, setWebviewLoading] = useState(false);
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  // pipOpen=true: main webview shows about:blank, pop-out window has the real player
+  const [pipOpen, setPipOpen] = useState(false);
+  const pipUrlRef = useRef(null); // URL to restore when pop-out closes
 
   // Derived: detect anime before any effects so effects can use it
   const isAnime = useMemo(
@@ -552,6 +556,20 @@ export default function MoviePage({
     };
   }, [playing, playerSource]);
 
+  // ── PiP pop-out: navigate main webview away so only one stream is active ──
+  useEffect(() => {
+    if (!playing) return;
+    const openH = window.electron?.onPipOpened?.(() => setPipOpen(true));
+    const closeH = window.electron?.onPipClosed?.(() => {
+      pipUrlRef.current = null;
+      setPipOpen(false);
+    });
+    return () => {
+      if (openH) window.electron?.offPipOpened?.(openH);
+      if (closeH) window.electron?.offPipClosed?.(closeH);
+    };
+  }, [playing]);
+
   const handleSetDownloaderFolder = useCallback((folder) => {
     setDownloaderFolder(folder);
     storage.set("downloaderFolder", folder);
@@ -827,12 +845,59 @@ export default function MoviePage({
                 </span>
               </div>
             )}
+            {/* Pop-out active: main stream is paused, pop-out has the real player */}
+            {pipOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 20,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "rgba(0,0,0,0.92)",
+                  gap: 16,
+                  borderRadius: "inherit",
+                }}
+              >
+                <PopOutIcon size={36} />
+                <span
+                  style={{
+                    fontSize: 15,
+                    color: "var(--text1)",
+                    fontWeight: 600,
+                  }}
+                >
+                  Playing in pop-out window
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text2)",
+                    textAlign: "center",
+                    maxWidth: 260,
+                  }}
+                >
+                  Closing the pop-out will reload the player here.
+                </span>
+                <button
+                  className="player-overlay-btn"
+                  onClick={() => window.electron?.closePipWindow?.()}
+                  style={{ marginTop: 4 }}
+                >
+                  Close pop-out &amp; return
+                </button>
+              </div>
+            )}
             <webview
               ref={webviewRef}
               src={
-                sourceIsAsync(playerSource)
-                  ? resolvedPlayerUrl || "about:blank"
-                  : getSourceUrl(playerSource, "movie", item.id, null, null)
+                pipOpen
+                  ? "about:blank"
+                  : sourceIsAsync(playerSource)
+                    ? resolvedPlayerUrl || "about:blank"
+                    : getSourceUrl(playerSource, "movie", item.id, null, null)
               }
               partition="persist:player"
               allowpopups="false"
@@ -899,6 +964,31 @@ export default function MoviePage({
                 {blockedSession > 0 && (
                   <span className="player-blocked-badge">{blockedSession}</span>
                 )}
+              </button>
+              {/* Pop-out button*/}
+              <button
+                className="player-overlay-btn"
+                onClick={() => {
+                  if (pipOpen) {
+                    window.electron?.closePipWindow?.();
+                    return;
+                  }
+                  const url = sourceIsAsync(playerSource)
+                    ? resolvedPlayerUrl
+                    : getSourceUrl(playerSource, "movie", item.id, null, null);
+                  if (!url) return;
+                  pipUrlRef.current = url;
+                  window.electron?.openPipWindow?.(url, item.title);
+                }}
+                title={pipOpen ? "Close pop-out" : "Pop out player"}
+                disabled={
+                  !pipOpen &&
+                  (webviewLoading ||
+                    !!(sourceIsAsync(playerSource) && !resolvedPlayerUrl))
+                }
+                style={pipOpen ? { color: "var(--red)" } : undefined}
+              >
+                <PopOutIcon />
               </button>
             </div>
             {showSourceMenu && menuPos && (

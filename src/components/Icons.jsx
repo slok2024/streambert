@@ -344,3 +344,20 @@ export const SubtitlesIcon = ({ size = 16, ...props }) => (
     <path d="M7 15h4M15 15h2M7 11h2M13 11h4" />
   </svg>
 );
+
+export const PopOutIcon = ({ size = 16 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="2" y="7" width="13" height="10" rx="2" />
+    <path d="M15 3h6v6" />
+    <path d="M10 14L21 3" />
+  </svg>
+);

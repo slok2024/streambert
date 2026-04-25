@@ -43,6 +43,7 @@ import {
   RatingLockIcon,
   SourceIcon,
   ShieldBlockIcon,
+  PopOutIcon,
 } from "../components/Icons";
 import DownloadModal from "../components/DownloadModal";
 import TrailerModal from "../components/TrailerModal";
@@ -407,6 +408,8 @@ export default function TVPage({
   // Webview loading overlay
   const [webviewLoading, setWebviewLoading] = useState(false);
   const [playerFullscreen, setPlayerFullscreen] = useState(false);
+  const [pipOpen, setPipOpen] = useState(false);
+  const pipUrlRef = useRef(null);
   const [menuPos, setMenuPos] = useState(null);
   // AniSkip
   const [skipTimings, setSkipTimings] = useState(null); // { intro?, outro? }
@@ -1371,6 +1374,20 @@ export default function TVPage({
     };
   }, [playing, playerSource]);
 
+  // ── PiP pop-out: navigate main webview away so only one stream is active ──
+  useEffect(() => {
+    if (!playing) return;
+    const openH = window.electron?.onPipOpened?.(() => setPipOpen(true));
+    const closeH = window.electron?.onPipClosed?.(() => {
+      pipUrlRef.current = null;
+      setPipOpen(false);
+    });
+    return () => {
+      if (openH) window.electron?.offPipOpened?.(openH);
+      if (closeH) window.electron?.offPipClosed?.(closeH);
+    };
+  }, [playing]);
+
   const effectiveYear =
     year ||
     (isAnime && anilistData?.startDate?.year
@@ -1588,18 +1605,65 @@ export default function TVPage({
                     </span>
                   </div>
                 )}
+                {/* Pop-out active: main stream paused, pop-out has real player */}
+                {pipOpen && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      zIndex: 20,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "rgba(0,0,0,0.92)",
+                      gap: 16,
+                      borderRadius: "inherit",
+                    }}
+                  >
+                    <PopOutIcon size={36} />
+                    <span
+                      style={{
+                        fontSize: 15,
+                        color: "var(--text1)",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Playing in pop-out window
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text2)",
+                        textAlign: "center",
+                        maxWidth: 260,
+                      }}
+                    >
+                      Closing the pop-out will reload the player here.
+                    </span>
+                    <button
+                      className="player-overlay-btn"
+                      onClick={() => window.electron?.closePipWindow?.()}
+                      style={{ marginTop: 4 }}
+                    >
+                      Close pop-out &amp; return
+                    </button>
+                  </div>
+                )}
                 <webview
                   ref={webviewRef}
                   src={
-                    isAsync
-                      ? resolvedPlayerUrl || "about:blank"
-                      : getSourceUrl(
-                          playerSource,
-                          "tv",
-                          item.id,
-                          playerEp.season,
-                          playerEp.episode,
-                        )
+                    pipOpen
+                      ? "about:blank"
+                      : isAsync
+                        ? resolvedPlayerUrl || "about:blank"
+                        : getSourceUrl(
+                            playerSource,
+                            "tv",
+                            item.id,
+                            playerEp.season,
+                            playerEp.episode,
+                          )
                   }
                   partition="persist:player"
                   allowpopups="false"
@@ -1671,6 +1735,39 @@ export default function TVPage({
                         {blockedSession}
                       </span>
                     )}
+                  </button>
+                  {/* Pop-out button */}
+                  <button
+                    className="player-overlay-btn"
+                    onClick={() => {
+                      if (pipOpen) {
+                        window.electron?.closePipWindow?.();
+                        return;
+                      }
+                      const url = isAsync
+                        ? resolvedPlayerUrl
+                        : getSourceUrl(
+                            playerSource,
+                            "tv",
+                            item.id,
+                            playerEp.season,
+                            playerEp.episode,
+                          );
+                      if (!url) return;
+                      pipUrlRef.current = url;
+                      window.electron?.openPipWindow?.(
+                        url,
+                        item.name ?? item.title,
+                      );
+                    }}
+                    title={pipOpen ? "Close pop-out" : "Pop out player"}
+                    disabled={
+                      !pipOpen &&
+                      (webviewLoading || !!(isAsync && !resolvedPlayerUrl))
+                    }
+                    style={pipOpen ? { color: "var(--red)" } : undefined}
+                  >
+                    <PopOutIcon />
                   </button>
                 </div>
                 {showSourceMenu && menuPos && (
@@ -1760,7 +1857,7 @@ export default function TVPage({
 
                 {/* Skip controls are injected directly into the webview DOM*/}
 
-                {/* AniSkip manual prompt — rendered in our UI, outside webview */}
+                {/* AniSkip manual prompt, rendered in streambert UI, outside webview */}
                 {skipPrompt && (
                   <button
                     onClick={handleManualSkip}

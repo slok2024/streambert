@@ -1,4 +1,4 @@
-// ── Streambert main process entry point ───────────────────────────────────────
+// -- Streambert main process entry point ---------------------------------------
 // Responsible for: window creation, session setup, ad-blocking, scheduled
 // backup trigger, and app lifecycle. All heavy IPC logic lives in src/ipc/.
 
@@ -12,7 +12,7 @@ const {
 } = require("electron");
 const path = require("path");
 
-// ── RAM / performance flags ───────────────────────────────────────────────────
+// -- RAM / performance flags ---------------------------------------------------
 app.commandLine.appendSwitch(
   "js-flags",
   "--max-old-space-size=256 --expose-gc",
@@ -30,12 +30,12 @@ app.commandLine.appendSwitch("enable-features", "NetworkServiceInProcess2");
 app.commandLine.appendSwitch("disk-cache-size", String(80 * 1024 * 1024));
 app.commandLine.appendSwitch("renderer-process-limit", "3");
 
-// ── Startup benchmark ─────────────────────────────────────────────────────────
+// -- Startup benchmark ---------------------------------------------------------
 const _t0 = Date.now();
 const _bench = (label) =>
   console.log(`[boot] ${label}: +${Date.now() - _t0}ms`);
 
-// ── Sub-modules ───────────────────────────────────────────────────────────────
+// -- Sub-modules ---------------------------------------------------------------
 const blockStats = require("./src/ipc/blockStats");
 const storageIpc = require("./src/ipc/storage");
 const downloadsIpc = require("./src/ipc/downloads");
@@ -43,7 +43,7 @@ const subtitlesIpc = require("./src/ipc/subtitles");
 const allmangaIpc = require("./src/ipc/allmanga");
 const playerIpc = require("./src/ipc/player");
 
-// ── Ad/tracker block list ─────────────────────────────────────────────────────
+// -- Ad/tracker block list -----------------------------------------------------
 const BLOCKED_HOSTS = [
   "*://www.google-analytics.com/*",
   "*://analytics.google.com/*",
@@ -98,11 +98,12 @@ const BLOCKED_HOSTS = [
   "*://tmstr4.neonhorizonworkshops.com/*",
 ];
 
-// ── Module-level state ────────────────────────────────────────────────────────
+// -- Module-level state --------------------------------------------------------
 let mainWindow = null;
 const getMainWindow = () => mainWindow;
 
 const playerWcIds = new Set();
+let sessionsConfigured = false;
 
 function setupSession(playerSession, trailerSession) {
   const stripHeaders = (details, callback) => {
@@ -238,10 +239,9 @@ function createWindow() {
     },
   );
 
-  // ── Lazy session setup ────────────────────────────────────────────────────
-  // Player/trailer sessions are only configured on the first webview attach
-  // (i.e. when the user actually opens a movie/trailer), not at startup.
-  let sessionsConfigured = false;
+  // -- Lazy session setup ----------------------------------------------------
+  // Player/trailer sessions are configured on the first webview attach or
+  // when the pop-out window opens, whichever comes first.
 
   // Block popups from webviews, intercept fullscreen, lazy-init sessions
   mainWindow.webContents.on("did-attach-webview", (_, wc) => {
@@ -307,7 +307,7 @@ function createWindow() {
   });
 }
 
-// ── Register all IPC modules ──────────────────────────────────────────────────
+// -- Register all IPC modules --------------------------------------------------
 storageIpc.register();
 downloadsIpc.register(getMainWindow);
 subtitlesIpc.register({
@@ -323,7 +323,7 @@ blockStats.init(getMainWindow);
 // get-block-stats lives with its data
 ipcMain.handle("get-block-stats", () => blockStats.getBlockStats());
 
-// ── Player memory cleanup ─────────────────────────────────────────────
+// -- Player memory cleanup ---------------------------------------------
 // Called by MoviePage / TVPage on component unmount.
 // Destroys the player webview WebContents by tracked ID, then flushes caches and GCs.
 ipcMain.on("player-stopped", () => {
@@ -360,7 +360,7 @@ ipcMain.on("player-stopped", () => {
   }
 });
 
-// ── Wyzie API Key Redemption Window ──────────────────────────────────────────
+// -- Wyzie API Key Redemption Window ------------------------------------------
 // Opens https://sub.wyzie.io/redeem in a child BrowserWindow, watches the DOM
 // for the api-key-display element, extracts the key, and sends it back.
 ipcMain.handle("wyzie-open-redeem", async () => {
@@ -437,7 +437,7 @@ ipcMain.handle("wyzie-open-redeem", async () => {
   });
 });
 
-// ── Wyzie API Key Validation ──────────────────────────────────────────────────
+// -- Wyzie API Key Validation --------------------------------------------------
 ipcMain.handle("wyzie-validate-key", async (_, key) => {
   try {
     const controller = new AbortController();
@@ -455,7 +455,7 @@ ipcMain.handle("wyzie-validate-key", async (_, key) => {
   }
 });
 
-// ── Desktop notifications ─────────────────────────────────────────────────────
+// -- Desktop notifications -----------------------------------------------------
 // Called from the renderer whenever it wants a native OS notification.
 ipcMain.handle(
   "show-notification",
@@ -472,7 +472,106 @@ ipcMain.handle(
   },
 );
 
-// ── Single-instance lock ──────────────────────────────────────────────────────
+// -- Picture-in-Picture / Pop-Out window --------------------------------------
+// Opens the player URL in a small always-on-top BrowserWindow (full site UI,
+// with subtitles and controls). The Main Window closes the stream to avoid duplication.
+let pipWindow = null;
+const getPipWindow = () => pipWindow;
+
+ipcMain.handle("open-pip-window", (_, { url, title }) => {
+  if (!url || url === "about:blank") return { ok: false, reason: "no-url" };
+
+  // Guarantee tracker/ad blocking is active in persist:player before any load
+  if (!sessionsConfigured) {
+    sessionsConfigured = true;
+    const playerSession = session.fromPartition("persist:player");
+    const trailerSession = session.fromPartition("persist:trailer");
+    setupSession(playerSession, trailerSession);
+  }
+
+  if (pipWindow && !pipWindow.isDestroyed()) {
+    pipWindow.loadURL(url);
+    pipWindow.focus();
+    return { ok: true };
+  }
+
+  pipWindow = new BrowserWindow({
+    width: 640,
+    height: 360,
+    minWidth: 320,
+    minHeight: 180,
+    alwaysOnTop: true,
+    title: title ? `${title} - Pop-out` : "Pop-out Player",
+    backgroundColor: "#000000",
+    // Same custom title bar as the main window
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+    frame: process.platform !== "win32",
+    webPreferences: {
+      partition: "persist:player",
+      nodeIntegration: false,
+      contextIsolation: true,
+      // Injects the custom title bar and wires window-control IPC
+      preload: path.join(__dirname, "popout-preload.js"),
+    },
+  });
+
+  // Block all popup windows from the streaming site and any nested frames
+  pipWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  // If the site uses <webview> elements (unlikely but safe), block there too
+  pipWindow.webContents.on("did-attach-webview", (_, wc) => {
+    wc.setWindowOpenHandler(() => ({ action: "deny" }));
+  });
+
+  pipWindow.loadURL(url);
+
+  // Push maximize state into the popout renderer so the title bar icon updates
+  pipWindow.on("maximize", () => {
+    if (!pipWindow.isDestroyed())
+      pipWindow.webContents.send("popout-window-maximized", true);
+  });
+  pipWindow.on("unmaximize", () => {
+    if (!pipWindow.isDestroyed())
+      pipWindow.webContents.send("popout-window-maximized", false);
+  });
+
+  const notifyMain = (channel) => {
+    const mw = getMainWindow();
+    if (mw && !mw.isDestroyed()) mw.webContents.send(channel);
+  };
+
+  pipWindow.on("closed", () => {
+    pipWindow = null;
+    notifyMain("pip-window-closed");
+  });
+
+  notifyMain("pip-window-opened");
+  return { ok: true };
+});
+
+ipcMain.handle("close-pip-window", () => {
+  if (pipWindow && !pipWindow.isDestroyed()) pipWindow.close();
+});
+
+// -- Popout window controls (used by popout-preload.js title bar buttons) -----
+ipcMain.handle("popout-window-minimize", () => {
+  if (pipWindow && !pipWindow.isDestroyed()) pipWindow.minimize();
+});
+ipcMain.handle("popout-window-toggle-maximize", () => {
+  if (!pipWindow || pipWindow.isDestroyed()) return;
+  if (pipWindow.isMaximized()) pipWindow.unmaximize();
+  else pipWindow.maximize();
+});
+ipcMain.handle("popout-window-close", () => {
+  if (pipWindow && !pipWindow.isDestroyed()) pipWindow.close();
+});
+ipcMain.handle("popout-window-is-maximized", () => {
+  return pipWindow && !pipWindow.isDestroyed()
+    ? pipWindow.isMaximized()
+    : false;
+});
+
+// -- Single-instance lock ------------------------------------------------------
 const gotTheLock = app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
